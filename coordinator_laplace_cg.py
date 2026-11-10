@@ -118,6 +118,11 @@ def conjugate_gradient(
 ) -> tuple[torch.Tensor, int, float]:
     """
     Решает M(p) = rhs методом сопряжённых градиентов.
+
+    ВНИМАНИЕ: обычный CG верен только когда M симметрична и положительно
+    определена, т.е. здесь при DX = DY = I и A = Aᵀ (B = Bᵀ). Для общих
+    DX, DY или несимметричных A, B нужен CGLS
+    (см. cgls в coordinator_laplace_descent.py).
     """
 
     p = torch.zeros_like(rhs)

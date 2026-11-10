@@ -9,10 +9,10 @@
 
 | Metric | Direct CPU Jacobi | Coordinator MPS |
 |---|---:|---:|
-| Time, sec | 0.3979 | 1.1407 |
+| Time, sec | 0.3620 | 0.9571 |
 | Iterations | 14654 | 57 |
 | Laplace residual | 9.99997916e-08 | 7.15255737e-07 |
-| Peak process memory, MiB | 34.64 | 259.30 |
+| Peak process memory, MiB | 32.41 | 260.73 |
 
 ## Agreement of final solutions
 
@@ -31,7 +31,7 @@
 Grid: 100 x 100
 Iterations: 14654
 Final error: 9.99997916e-08
-Time: 0.3979 sec
+Time: 0.3620 sec
 Min value: 0.000000
 Max value: 0.999874
 Saved: direct_laplace_solution.npy
@@ -52,7 +52,7 @@ CG residual norm: 6.82926327e-07
 Max |u - v|: 6.25848770e-07
 RMS |u - v|: 1.10067255e-07
 Laplace residual: 7.15255737e-07
-Time: 1.1407 sec
+Time: 0.9571 sec
 Saved: coordinator_laplace_cg_solution.npy
 
 === Comparison with direct CPU solution ===
