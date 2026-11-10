@@ -89,7 +89,7 @@ class CoordinatorProblem:
     dy: LinearMap
     fx: torch.Tensor  # [rows, cols]
     fy: torch.Tensor  # [rows, cols] (в ориентации q, не транспонировано)
-    # Способ прогонки: "auto" | "dense" (треугольные BLAS) | "thomas" (цикл).
+    # Способ прогонки: "auto" | "dense" (треугольные BLAS) | "thomas" (цикл) | "pcr" (GPU).
     solver: str = "auto"
     # Число решённых пакетов трёхдиагональных систем (одна прогонка по
     # всем строкам или всем столбцам = 1).
@@ -202,21 +202,39 @@ class AdiPreconditioner:
         lower, diagonal, upper = coef
         return TridiagonalFactor(lower, diagonal + tau, upper, method=self.problem.solver)
 
+    MAX_SPECTRUM_ROWS = 16
+
     def _spectral_bounds(self) -> tuple[float, float]:
-        """Границы спектра X и Y: точные собственные числа одномерных матриц."""
+        """
+        Границы спектра X и Y по собственным числам одномерных матриц.
+
+        Постоянные коэффициенты -> одна матрица. Переменные -> не более
+        MAX_SPECTRUM_ROWS равномерно выбранных строк: τ — лишь параметры
+        ускорения, GMRES остаётся точным при любых τ.
+        Если lower·upper > 0 (диффузия + противопоточная адвекция), матрица
+        диагональным подобием сводится к симметричной с внедиагональю
+        √(lower·upper) -> eigvalsh, спектр вещественный.
+        """
         lows, highs = [], []
         for coef in (self.x_coef, self.y_coef):
             lower, diagonal, upper = (t.cpu().double() for t in coef)
             # Одинаковые строки (постоянные коэффициенты) -> одна матрица.
             if all(torch.equal(t, t[:1].expand_as(t)) for t in (lower, diagonal, upper)):
                 lower, diagonal, upper = lower[:1], diagonal[:1], upper[:1]
+            elif diagonal.shape[0] > self.MAX_SPECTRUM_ROWS:
+                pick = torch.linspace(0, diagonal.shape[0] - 1, self.MAX_SPECTRUM_ROWS).round().long()
+                lower, diagonal, upper = lower[pick], diagonal[pick], upper[pick]
             idx = torch.arange(diagonal.shape[1])
             dense = torch.diag_embed(diagonal)
-            dense[:, idx[1:], idx[:-1]] = lower[:, 1:]
-            dense[:, idx[:-1], idx[1:]] = upper[:, :-1]
-            if torch.equal(lower[:, 1:], upper[:, :-1]):
+            products = lower[:, 1:] * upper[:, :-1]
+            if bool(torch.all(products > 0)):
+                off = torch.sqrt(products)
+                dense[:, idx[1:], idx[:-1]] = off
+                dense[:, idx[:-1], idx[1:]] = off
                 eig = torch.linalg.eigvalsh(dense)
             else:
+                dense[:, idx[1:], idx[:-1]] = lower[:, 1:]
+                dense[:, idx[:-1], idx[1:]] = upper[:, :-1]
                 eig = torch.linalg.eigvals(dense).real
             lows.append(eig.min().item())
             highs.append(eig.max().item())

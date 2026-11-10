@@ -87,8 +87,16 @@ class TridiagonalFactor:
         upper: torch.Tensor,
         method: str = "auto",
     ) -> None:
-        """method: "auto" (dense при n <= DENSE_MAX_SIZE), "dense" или "thomas"."""
+        """
+        method: "auto" (dense при общей матрице и n <= DENSE_MAX_SIZE),
+        "dense", "thomas" или "pcr" (параллельная циклическая редукция, для GPU).
+        """
         system_size = diagonal.shape[1]
+        self.method = method
+        if method == "pcr":
+            self.dense = False
+            self._init_pcr(lower, diagonal, upper)
+            return
 
         c_prime = torch.zeros_like(upper)
         inv_denominator = torch.zeros_like(diagonal)
@@ -111,12 +119,18 @@ class TridiagonalFactor:
         # диагонали, lower под ней), U — единичная верхняя (c' над диагональю).
         # Решение = две треугольные системы одним вызовом BLAS вместо цикла
         # Python по n шагам. Плотные L, U занимают n² — выгодно при малых n.
-        self.dense = method == "dense" or (method == "auto" and system_size <= DENSE_MAX_SIZE)
+        # В auto плотный путь берём только для одной общей матрицы на весь
+        # пакет: при разных строках это batch·n² памяти и операций, и цикл
+        # прогонки быстрее (замер на задаче загрязнения 401 x 201: 0.44 с
+        # против 9.5 с).
+        shared = all(
+            bool(torch.equal(t, t[:1].expand_as(t)))
+            for t in (lower, diagonal, upper)
+        )
+        self.dense = method == "dense" or (
+            method == "auto" and shared and system_size <= DENSE_MAX_SIZE
+        )
         if self.dense:
-            shared = all(
-                bool(torch.equal(t, t[:1].expand_as(t)))
-                for t in (lower, diagonal, upper)
-            )
             rows = slice(0, 1) if shared else slice(None)
             idx = torch.arange(system_size, device=diagonal.device)
 
@@ -129,7 +143,57 @@ class TridiagonalFactor:
             self.l_mat = l_mat[0] if shared else l_mat
             self.u_mat = u_mat[0] if shared else u_mat
 
+    def _init_pcr(self, lower: torch.Tensor, diagonal: torch.Tensor, upper: torch.Tensor) -> None:
+        """
+        Параллельная циклическая редукция (Hockney, 1965; PCR).
+
+        Шаг k (k = 1, 2, 4, ...): уравнение i исключает соседей i-k и i+k
+        с помощью уравнений i-k и i+k:
+            α_i = -a_i / b_{i-k},   γ_i = -c_i / b_{i+k},
+            a_i ← α_i a_{i-k},  c_i ← γ_i c_{i+k},
+            b_i ← b_i + α_i c_{i-k} + γ_i a_{i+k},
+            d_i ← d_i + α_i d_{i-k} + γ_i d_{i+k}.
+        После ⌈log₂ n⌉ шагов каждое уравнение — b_i x_i = d_i.
+        Все i и все системы пакета обрабатываются одновременно — нет
+        последовательного прохода по n, как в прогонке. Работа O(n log n)
+        вместо O(n), но глубина O(log n) вместо O(n): на GPU это важнее.
+
+        Матрица не меняется, поэтому α, γ и 1/b считаются один раз;
+        solve() — только ⌈log₂ n⌉ обновлений правой части.
+        Общая матрица на весь пакет хранится одной строкой [1, n].
+        """
+        shared = all(
+            bool(torch.equal(t, t[:1].expand_as(t)))
+            for t in (lower, diagonal, upper)
+        )
+        if shared:
+            lower, diagonal, upper = lower[:1], diagonal[:1], upper[:1]
+        a, b, c = lower.clone(), diagonal.clone(), upper.clone()
+        n = b.shape[1]
+        self.pcr_steps: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        k = 1
+        while k < n:
+            b_prev, b_next = _shift_down(b, k, 1.0), _shift_up(b, k, 1.0)
+            alpha = -a / b_prev
+            gamma = -c / b_next
+            a_prev, c_prev = _shift_down(a, k, 0.0), _shift_down(c, k, 0.0)
+            a_next, c_next = _shift_up(a, k, 0.0), _shift_up(c, k, 0.0)
+            b = b + alpha * c_prev + gamma * a_next
+            a = alpha * a_prev
+            c = gamma * c_next
+            self.pcr_steps.append((k, alpha, gamma))
+            k *= 2
+        self.pcr_inv_b = 1.0 / b
+
+    def _solve_pcr(self, rhs: torch.Tensor) -> torch.Tensor:
+        d = rhs
+        for k, alpha, gamma in self.pcr_steps:
+            d = d + alpha * _shift_down(d, k, 0.0) + gamma * _shift_up(d, k, 0.0)
+        return d * self.pcr_inv_b
+
     def solve(self, rhs: torch.Tensor) -> torch.Tensor:
+        if self.method == "pcr":
+            return self._solve_pcr(rhs)
         if self.dense:
             return self._solve_dense(rhs)
         return self._solve_thomas(rhs)
@@ -159,6 +223,16 @@ class TridiagonalFactor:
             solution[:, i] = d_prime[:, i] - c_prime[:, i] * solution[:, i + 1]
 
         return solution
+
+
+def _shift_down(t: torch.Tensor, k: int, fill: float) -> torch.Tensor:
+    """out[:, i] = t[:, i - k], за краем — fill."""
+    return torch.nn.functional.pad(t[:, :-k], (k, 0), value=fill)
+
+
+def _shift_up(t: torch.Tensor, k: int, fill: float) -> torch.Tensor:
+    """out[:, i] = t[:, i + k], за краем — fill."""
+    return torch.nn.functional.pad(t[:, k:], (0, k), value=fill)
 
 
 def transpose_tridiagonal(
