@@ -23,7 +23,7 @@
 
 Каждый вариант считается в отдельном процессе: время (лучшее из 3 после
 прогрева), итерации, ошибка, прирост памяти процесса (RSS), память GPU.
-Пишет results/laplace_gpu_benchmark.csv и .md.
+Пишет results/laplace_gpu_benchmark_<устройство>.csv (mps, cuda или cpu).
 
     python laplace_gpu_benchmark.py            # все сетки
     python laplace_gpu_benchmark.py 100        # только 100 x 100
@@ -98,10 +98,17 @@ def peak_rss_bytes() -> int:
                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
 
+        # Без явных типов ctypes обрезает 64-битный дескриптор до int,
+        # вызов молча проваливается и память получается 0.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        get_info = kernel32.K32GetProcessMemoryInfo
+        get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        get_info.restype = wintypes.BOOL
         c = Counters()
         c.cb = ctypes.sizeof(c)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(c), c.cb)
+        if not get_info(kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
         return int(c.PeakWorkingSetSize)
     import resource
 
@@ -276,11 +283,11 @@ def main() -> None:
 
     out_dir = Path(__file__).resolve().parent / "results"
     out_dir.mkdir(exist_ok=True)
-    with open(out_dir / "laplace_gpu_benchmark.csv", "w", newline="") as f:
+    with open(out_dir / f"laplace_gpu_benchmark_{GPU}.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
-    print("Сохранено: results/laplace_gpu_benchmark.csv")
+    print(f"Сохранено: results/laplace_gpu_benchmark_{GPU}.csv")
 
 
 if __name__ == "__main__":

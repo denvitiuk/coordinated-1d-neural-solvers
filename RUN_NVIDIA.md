@@ -76,8 +76,8 @@ python laplace_gpu_benchmark.py 1600       # большая сетка
 
 Первая строка вывода показывает, на чём идёт счёт, например
 `GPU: NVIDIA GeForce RTX 4070 (cuda)`. Результаты сохраняются в
-`results/laplace_gpu_benchmark.csv` (перезаписывается — сохраните
-копию маковского файла, если он нужен).
+`results/laplace_gpu_benchmark_cuda.csv` (у Mac свой файл `_mps.csv`,
+они не затирают друг друга). Файл в UTF-8 и открывается в Excel.
 
 На CUDA появляются варианты:
 
