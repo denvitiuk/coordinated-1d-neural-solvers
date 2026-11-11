@@ -1,3 +1,4 @@
-# PyTorch ставится отдельно под свою систему и видеокарту: см. RUN_NVIDIA.md
+# Install PyTorch for your platform / GPU first if needed, see RUN_NVIDIA.md
 torch>=2.4
 numpy>=1.26
+matplotlib>=3.8   # only for make_figures.py
